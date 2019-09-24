@@ -1,0 +1,564 @@
+---
+title: "Artisanal Innovation Analysis"
+subtitle: "Introductory Figures and Regressions"
+author: "Alex Hoagland"
+date: May 2019
+output: 
+  beamer_presentation:
+    slide_level: 2
+  includes: 
+  in_header: ~Dropbox/rtw_synth_control/output/rmd-beamer-header.tex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+# Packages
+# library(sf)
+# library(tigris) # Used for mapping MSAs -- calls package sf as well
+library(readxl)
+library(tidyverse)
+library(tidylog)
+library(zoo) # Useful for date formats
+library(reshape2)
+library(here)
+library(stargazer)
+library(knitr)
+library(maps)
+library(cdlTools) # Used for FIPS codes 
+library(plotrix) # Calculates SE's in summary tables
+library(kableExtra) # For tables in R
+library(data.table) # Extra commands used in dplyr (e.g., uniqueN)
+library(fastDummies) # Used in regression at the end
+
+# Functions I want
+Mode <- function(x) {
+  ux <- unique(x[!is.na(x)])
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+Modes <- function(x) {
+  ux <- unique(x[!is.na(x)])
+  tab <- tabulate(match(x, ux))
+  ux[tab == max(tab)]
+}
+
+# Code tips I keep handy
+# beepr::beep("coin") # will make a noise when code is done running
+```
+
+## Do therapists incorporate FBT slowly? 
+``` {r Diffusion_Over_Time, echo=F, warning=F, message=F}
+##### THIS CHUNK: Creates a figure showing the *share of patients* receiving FBT over time from adopting physicians
+#
+#     OUTPUT: 1. "4_Output/Figures/Partial_Diffusion.png" shows the simple fraction over time
+#             2. "4_Output/Figures/Partial_Diffusion_Stratified.png" is broken into main types of providers
+#     
+#     MAJOR EDITS:
+#        - (TBA): Think about these graphs more
+################################################################################
+
+# Load data
+load(here("2_Data", "ED_Outpatient_TherapistQuarter_Panel.Rda"))
+therapistdata <- therapistdata[therapistdata$adopter == 1, ] # Keep only the adopters for this graph
+
+### Figure 1: Simple evolution
+# Data prep
+therapistdata$time_since_adoption <- therapistdata$quarter - therapistdata$an_first_fbt_qtr
+figdata <- therapistdata %>% group_by(time_since_adoption) %>% summarize(share_receiving = weighted.mean(frac_pats_fbt, w=an_totpatients))
+
+# Creating and saving image
+fig <- ggplot(figdata, aes(time_since_adoption, share_receiving)) + geom_line(color='goldenrod', lwd=1) +
+  labs(x="Time since adoption (years)", y = "% of AN patients receiving family-based treatments") + ggtitle("How do therapists react to experimentation?") +
+  theme_minimal()
+ggsave(fig, file=here("4_Output/Figures", "PartialDiffusion.png"), width=9)
+
+### Figure 2: Stratified by Provider Type
+# Data prep
+prov_types <- read_excel("C:/Users/alexh/OneDrive/Documents/Research/Artisanal Innovation/2_Data/MarketScan_Overview.xlsx", sheet = "Provider Types")
+therapistdata <- left_join(therapistdata, prov_types)
+figdata <- therapistdata %>% group_by(time_since_adoption, Simple_Label) %>% summarize(share = weighted.mean(frac_pats_fbt, w=an_totpatients)) %>% drop_na()
+
+# Keeping only certain groups
+type_list <- c("Outpatient Thpts", "Psychologist")
+figdata <- figdata[figdata$Simple_Label %in% type_list, ]
+figdata <- figdata[figdata$time_since_adoption > -1 & figdata$time_since_adoption < 10.75, ] # No need to keep lengthy time before adoption
+
+# Creating and saving image
+fig2 <- ggplot(figdata, aes(time_since_adoption, share, color=Simple_Label)) + geom_line(lwd=1) +
+  labs(x="Time since adoption (years)", y = "% of AN patients receiving family-based treatments", color = "Provider Type") + 
+  ggtitle("How do therapists react to experimentation?") + theme_minimal() + scale_color_manual(values=c("Maroon", "Goldenrod1")) 
+ggsave(fig2, file=here("4_Output/Figures", "PartialDiffusion_Stratified.png"), width=11)
+```
+
+## Which types of providers offer FBT for anorexia? 
+``` {r Adopters_ProviderType_Figure, echo=F, warning=F, message=F}
+##### THIS CHUNK: Creates figures for the type of providers adopting FBT
+#
+#     OUTPUT: 1. "4_Output/Figures/Adoption_by_ProviderType.png" counts adopters/non-adopters across provider types
+#             2. "4_Output/Figures/Adoption_by_ProviderType_Sorted.png" shows the fraction of adoption across types, sorted
+#     
+#     MAJOR EDITS:
+#        - (TBA): Colors for the first one if you put it in the poster? 
+################################################################################
+
+# Load data
+load(here("2_Data", "ED_Outpatient_TherapistQuarter_Panel.Rda"))
+
+### Figure 1: Count of adoption by therapist groups
+#  Counts for figure
+figdata <- therapistdata %>% group_by(prov_type, adopter) %>% summarize(countobs = n()) %>% drop_na()
+figdata <- figdata[order(figdata$prov_type, figdata$adopter), ]
+figdata$adopter <- factor(figdata$adopter, levels=c(0, 1), labels=c("No", "Yes"))
+prov_types <- read_excel("C:/Users/alexh/OneDrive/Documents/Research/Artisanal Innovation/2_Data/MarketScan_Overview.xlsx", sheet = "Provider Types")
+figdata <- left_join(figdata, prov_types)
+figdata <- figdata %>% group_by(adopter, Simple_Label) %>% summarize(countobs = sum(countobs))
+
+# Drop categories with few observations
+figdata <- figdata %>% group_by(Simple_Label) %>% mutate(total = sum(countobs))
+figdata <- figdata[figdata$total > 20,]
+
+# Figure creation and saving
+fig <- ggplot(figdata, aes(Simple_Label, countobs, fill=adopter)) + geom_bar(position='dodge', stat='identity') +
+  ggtitle("FBT Adoption by Provider Type (N = 3,976 therapists)") + labs(x = "Provider Type", y = "Count", fill = "Adopter") + theme_minimal() + 
+  theme(axis.text.x = element_text(angle=90, hjust=1))
+ggsave(fig, file=here("4_Output/Figures", "Adoption_by_ProviderType.png"), width=9)
+  
+
+### Figure 2: % of each group adopting (sorted) 
+figdata$didadopt <- as.numeric(figdata$adopter)-1
+figdata <- figdata %>% group_by(Simple_Label) %>% summarize(frac_adopt = weighted.mean(didadopt, w=countobs))
+
+# Figure creation and saving
+figdata <- transform(figdata, Simple_Label=reorder(Simple_Label, -frac_adopt))
+fig2 <- ggplot(figdata, aes(Simple_Label, frac_adopt)) + geom_bar(position='dodge', stat='identity', fill='darkgoldenrod1') + 
+  ggtitle("FBT Adoption by Provider Type (N = 3,976 therapists)") + labs(x = "Provider Type", y = "Fraction Adopting FBT") + theme_minimal() + 
+  theme(axis.text.x = element_text(angle=90, hjust=1))
+ggsave(fig2, file=here("4_Output/Figures", "Adoptyion_by_ProviderType_Sorted.png"), width=9)
+```
+
+## Where are FBT/MFT offered? 
+``` {r mapping_fbt_mft_for_an, echo=F, warning=F, message=F}
+##### THIS CHUNK: Maps which MSAs offer FBT/MFT for AN over the data period (as well as when they were introduced)
+#
+#     OUTPUT: 4 maps, for frequency/first year observed of both FBT and MFT at the MSA level. 
+#     
+#     MAJOR EDITS:
+#        - (TBA): add a way to save/display these at will (over multiple slides)? 
+#        - (TBA): Need to correct some changed MSAs over the period
+################################################################################
+
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+# sf Data Options
+options(tigris_class = "sf")
+options(tigris_use_cache = T)
+
+# Keeping observations with desired treatments
+therapydata <- therapydata[therapydata$fam_therapy==1, ]
+
+# Collapsing by MSA (with frequency and first instance)
+tomap_fbt <- therapydata %>% group_by(MSA) %>% summarize(freq = n(), 
+                                                     firstyear = min(YEAR))
+
+therapydata <- therapydata[therapydata$PROC1==90849,]
+tomap_mft <- therapydata %>% group_by(MSA) %>% summarize(freq = n(), 
+                                                         firstyear = min(YEAR))
+
+# Making a map of treatments 
+# MSA map file
+mymap <- core_based_statistical_areas(cb=T)
+mymap$state <- gsub('.*, ', '', mymap$NAME)
+mymap <- mymap[!grepl("AK", mymap$state) & !grepl("HI", mymap$state) & !grepl("PR", mymap$state),]
+
+# Merging in FBT data
+tomap_fbt <- tomap_fbt[tomap_fbt$MSA>0,]
+colnames(tomap_fbt) <- c("GEOID", "freq", "firstyear")
+tomap_fbt$GEOID <- as.character(tomap_fbt$GEOID)
+mymap <- left_join(mymap, tomap_fbt, by="GEOID")
+
+# Merging in MFT data
+tomap_mft <- tomap_mft[tomap_mft$MSA > 0, ]
+colnames(tomap_mft) <- c("GEOID", "freq_mft", "firstyear_mft")
+tomap_mft$GEOID <- as.character(tomap_mft$GEOID)
+mymap <- left_join(mymap, tomap_mft, by="GEOID")
+
+# FBT frequency map
+tograph <- mymap[mymap$freq > 0, ]
+map_fbt <- ggplot(mymap) + geom_sf(fill='white') + geom_sf(data=tograph, aes(fill=freq)) + scale_fill_viridis_c(trans='sqrt', alpha=.7) + 
+  theme(axis.line = element_blank(), axis.text.x = element_blank(), axis.text.y = element_blank(), axis.ticks = element_blank()) + 
+  theme_minimal()+ggtitle('Frequency of FBT-based treatments by MSA')+labs(fill="Freq of FBT")
+
+tograph$firstyear <- as.factor(tograph$firstyear)
+st <- states(cb=T) # Adding in state boundaries
+st <- st[(st$STUSPS != "AK" & st$STUSPS != "HI" & st$STATEFP < 60), ]# Keeping only continental
+map_fbt_spread <- ggplot(mymap) + geom_sf(fill='white') + geom_sf(data=st, fill='white') + 
+  geom_sf(data=tograph, aes(fill=firstyear)) + scale_fill_viridis_d(alpha=.7, direction=-1) + 
+  theme(axis.line = element_blank(), axis.text.x = element_blank(), axis.text.y = element_blank(), axis.ticks = element_blank()) + 
+  theme_minimal()+ggtitle('Spread of FBT by MSA')+labs(fill="First FBT Year")
+
+# MFT frequency map 
+tograph <- mymap[mymap$freq_mft > 0, ]
+map_mft <- ggplot(mymap) + geom_sf(fill='white') + geom_sf(data=tograph, aes(fill=freq_mft)) + scale_fill_viridis_c(trans='sqrt', alpha=.7) + 
+  theme(axis.line = element_blank(), axis.text.x = element_blank(), axis.text.y = element_blank(), axis.ticks = element_blank()) + 
+  theme_minimal()+ggtitle('Frequency of MFT by MSA')+labs(fill="Freq of MFT")
+
+tograph$firstyear_mft <- as.factor(tograph$firstyear_mft)
+map_mft_spread <- ggplot(mymap) + geom_sf(fill='white') + geom_sf(data=st, fill='white') + 
+  geom_sf(data=tograph, aes(fill=firstyear_mft)) + scale_fill_viridis_d(alpha=.7, direction=-1) + 
+  theme(axis.line = element_blank(), axis.text.x = element_blank(), axis.text.y = element_blank(), axis.ticks = element_blank()) + 
+  theme_minimal()+ggtitle('Spread of MFT by MSA')+labs(fill="First MFT Year")
+
+# Saving desired outputs
+want_fig <- F
+if (want_fig) {
+  ggsave(map_fbt_spread, file=here("4_Output/Figures", "Map_of_FBT_Spread_Timeline.png"), width=9, height=7)
+}
+```
+
+## How many physicians move in my sample? How many of those are offering FBT/MFT?
+``` {r id'ing_physician_movers, echo=F, warning=F, message=F}
+##### THIS CHUNK: Identifies how many/which physicians in the sample move. 
+#
+#     OUTPUT:
+#     
+#     MAJOR EDITS:
+#        - (TBA): Compare these results after adding in all therapists' caseload from SAS. 
+#        - (TBA): Figure out what to do with travelling physicians, or those who move/move back
+################################################################################
+
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+# Identifying which therapists switch MSAs over the sample
+therapydata <- therapydata[order(therapydata$PROVID, therapydata$SVCDATE), ]
+track_moves <- therapydata %>% 
+  filter(MSA != 0) %>% 
+  group_by(PROVID) %>% 
+  mutate(switch = max(MSA) - min(MSA))
+track_moves$switch <- ifelse(track_moves$switch > 0, 1, 0)
+switchers <- track_moves %>% group_by(PROVID) %>% summarize(switch = max(switch), 
+                                                            ft = max(fam_therapy)) 
+# xtabs(~switchers$switch + switchers$ft) #554/4539 (12%) of therapists move, 221/1027 (22%) of FBT therapists move, and 221/554 (40%) of movers are FBT-ers.
+
+track_moves <- track_moves %>% filter(switch == 1) %>% group_by(PROVID, MSA) %>% summarize(arrival = min(SVCDATE), 
+                                                                                    departure = max(SVCDATE))
+track_moves <- track_moves[order(track_moves$PROVID, track_moves$arrival), ]
+```
+
+``` {r mapping_therapist_motion, echo=F, warning=F, message=F}
+##### THIS CHUNK: Provides an animation of how/where ED therapists are moving (and the FBT ones)
+#
+#     OUTPUT:
+#     
+#     MAJOR EDITS:
+#        - (TBA): Compare these results after adding in all therapists' caseload from SAS. 
+#        - (TBA): Figure out what to do with travelling physicians, or those who move/move back
+#        - (TBA): Add a gganimate map of how the physicians travel. 
+################################################################################
+
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+## Packages
+library(gganimate)
+library(gapminder)
+library(gifski)
+
+# First instance of FBT for each therapist (turn dot a different color after that)
+therapydata <- left_join(therapydata, therapydata %>% filter(fam_therapy==1) %>% group_by(PROVID) %>% summarize(first_fbt = min(date_monthyr)), 
+                         by=c("PROVID"))
+
+# ## Assigning an MSA to every therapist/month pair
+# tomap <- therapydata %>% group_by(PROVID, date_monthyr) %>% filter(MSA > 0) %>% summarize(MSA1 = max(MSA), 
+#                                                                                           MSA2 = min(MSA), 
+#                                                                                           diff = MSA1 - MSA2, 
+#                                                                                           MSA_mostfreq = names(table(MSA))[which.max(table(MSA))], 
+#                                                                                           first_fbt = min(first_fbt))
+
+## If you want therapist/year instead:
+tomap <- therapydata %>% group_by(PROVID, YEAR) %>% filter(MSA > 0) %>% summarize(MSA1 = max(MSA), 
+                                                                                  MSA2 = min(MSA), 
+                                                                                  diff = MSA1 - MSA2, 
+                                                                                  MSA_mostfreq = names(table(MSA))[which.max(table(MSA))], 
+                                                                                  first_fbt = min(first_fbt))
+tomap$first_fbt <- substr(tomap$first_fbt, 1, 4)
+
+tomap[is.na(tomap$first_fbt), ]$first_fbt <- "2018" # or "2018-01" if you're doing monthly
+tomap$diff <- ifelse(tomap$diff > 0, 1, 0) # These are the therapists that moved around even within a month -- probably travelling
+                                           # I want to assign these to the MSA where they spent the majority of their time in that month. 
+
+tomap$MSA1 <- ifelse(tomap$diff == 1, tomap$MSA_mostfreq, tomap$MSA1)
+tomap$done_fbt <- ifelse(tomap$YEAR < tomap$first_fbt, 0, 1)
+tomap <- tomap[, c("PROVID", "YEAR", "MSA1", "diff", "done_fbt")]
+colnames(tomap) <-c("PROVID", "Date", "MSA", "traveller", "done_fbt")
+
+## Static plot
+# Source: https://www.datanovia.com/en/blog/gganimate-how-to-create-plots-with-beautiful-animation-in-r/
+options(tigris_class = "sf") # sf Data Options
+options(tigris_use_cache = T)
+
+# MSA map file
+mymap <- core_based_statistical_areas(cb=T)
+mymap$state <- gsub('.*, ', '', mymap$NAME)
+mymap <- mymap[!grepl("AK", mymap$state) & !grepl("HI", mymap$state) & !grepl("PR", mymap$state),]
+st <- states(cb=T) # Adding in state boundaries
+st <- st[(st$STUSPS != "AK" & st$STUSPS != "HI" & st$STATEFP < 60), ]# Keeping only continental
+
+# Rough centroids
+mymap$test <- st_centroid(mymap$geometry)
+mymap$test <- mymap$test %>% st_cast("MULTIPOINT") %>% st_cast("POINT")
+mymap$longitude <- st_coordinates(mymap$test)[,1]
+mymap$latitude <- st_coordinates(mymap$test)[,2]
+
+# Coloring in MSA's by first year
+colnames(mymap)[colnames(mymap)=="GEOID"] <- "MSA"
+mymap$MSA <- as.numeric(mymap$MSA)
+mymap <- left_join(mymap, (therapydata %>% filter(MSA > 0) %>% group_by(MSA) %>% summarise(firstyr = min(YEAR))), by=c("MSA"))
+
+# Merging in latitude/longitude to therapist panel
+tomerge <- mymap[, c("MSA","longitude","latitude")]
+colnames(tomerge) <- c("MSA", "Longitude", "Latitude", "Geometry")
+tomerge$MSA <- as.character(tomerge$MSA)
+tomap <- left_join(tomap, tomerge, by=c("MSA"))
+
+# Keeping only movers 
+tomap <- tomap[tomap$PROVID %in% movers, ]
+
+# Static plot
+mymap$firstyr <- as.factor(mymap$firstyr)
+tomap$done_fbt <- as.factor(tomap$done_fbt)
+p_stat <- ggplot() + geom_sf(data=st, fill='white') + geom_sf(data=mymap, aes(fill=firstyr)) + scale_fill_viridis_d(alpha=.7, direction=-1) +  
+            geom_jitter(data=tomap, aes(Longitude, Latitude, color=done_fbt)) + 
+            theme_minimal() + labs(fill="First FBT Year", color="FBT Therapist")
+
+# Transition by month/year
+create_gif <- F
+if (create_gif) {
+  # tomap$Date <- paste(tomap$Date, "-01", sep="") # I you're doing monthyl
+  # tomap$Date <- as.Date(tomap$Date)
+  p_animate <- p_stat + transition_time(tomap$Date) + shadow_wake(wake_length=0.1, alpha=F) + labs(title = "Location of Therapists: {frame_time}")
+  
+  # Bells and whistles: shadow_wake(wake_length=0.1, alpha=F) will show where the dots are coming from. 
+  # - color by family therapist or not
+  # - may want to lump into quarters, not just months
+  
+  # Saving as .gif
+  anim_save(p_animate, file=here("4_Output/Figures", "Therapist_Moving.gif"), width=720)
+}
+```
+
+## How does use of family therapy vary with provider experience? 
+``` {r adoption_by_experience}
+##### THIS CHUNK: Creates a figure showing adoption rates by years of experience 
+#
+#     OUTPUT:
+#        - "4_Output/Figures/adoption_by_experience.png" shows adoption rates by my experience proxy
+#     
+#     MAJOR EDITS:
+#        - (TBA): How can I control for time effects in this? Use a regression?
+################################################################################
+
+load(here("2_Data", "ED_Outpatient_TherapistQuarter_Panel.Rda"))
+therapistdata <- therapistdata[(therapistdata$quarter == therapistdata$an_first_fbt_qtr) | (therapistdata$adopter == 0), ] 
+    # Remove already adopted from data for graph
+
+figdata <- therapistdata %>% group_by(experience) %>% summarize(share_adopter = mean(adopter))
+
+fig <- ggplot(figdata, aes(experience, share_adopter)) + geom_line(color="maroon", lwd=1) + geom_smooth() + 
+  labs(x="Provider experience (years)", y= "Fraction of providers adopting") + ggtitle("Adoption rates by provider experience") + theme_minimal() + theme(title = element_text(size=14))
+
+ggsave(fig, file=here("4_Output/Figures", "Adoption_by_Experience.png"), width=9)
+```
+
+## How does use of family therapy vary with prescriptions? 
+``` {r setting_up_perscriptions, echo=F, message=F, warning=F}
+##### THIS CHUNK: Identifies prescriptions relevant to my treatment sample
+#
+#     OUTPUT:
+#     
+#     MAJOR EDITS:
+#        - (TBA): Look at what drugs were prescribed (by class/group/ID) to form fixed effects
+#        - (TBA): Is 3 months after last visit too long? See if drugs in this window are different
+#        - (TBA): Make a counter of prescriptsions (unique drugs) and other controls to merge in
+################################################################################
+
+# Original data
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+if (file.exists(here("2_Data", "ED_Outpatient_AllPharmacy.Rda"))) {
+  load(here("2_Data", "ED_Outpatient_AllPharmacy.Rda"))
+} else {
+    # Prescriptions data
+    for (i in 2007:2017) {
+      nam <- paste("scrips", i, sep="")
+      assign(nam, read.csv(here("2_Data", paste("outpatient_pharmacy_", i, ".csv", sep=""))))
+    }
+    
+    # Combining the data sets
+    datasets <- list(scrips2007, scrips2008, scrips2009, scrips2010, scrips2011, scrips2012, scrips2013, scrips2014, scrips2015, scrips2016, scrips2017)
+    wanted_varnames <- Reduce(intersect, lapply(datasets, names)) # This gives all variable names that are common across data sets. 
+    scripsdata <- rbind(scrips2007[wanted_varnames], scrips2008[wanted_varnames], scrips2009[wanted_varnames], scrips2010[wanted_varnames], 
+                        scrips2011[wanted_varnames], scrips2012[wanted_varnames], scrips2013[wanted_varnames], scrips2014[wanted_varnames], 
+                        scrips2015[wanted_varnames], scrips2016[wanted_varnames], scrips2017[wanted_varnames])
+    
+    scripsdata <- scripsdata[(scripsdata$SVCDATE != "") & (!is.na(scripsdata$SVCDATE)), ] # Dropping obs w/o dates
+    scripsdata <- scripsdata[order(scripsdata$ENROLID, scripsdata$SVCDATE), ]
+    scripsdata$SVCDATE <- as.character(scripsdata$SVCDATE) # Making service date into date format
+    scripsdata$SVCDATE <- as.Date(scripsdata$SVCDATE, "%m/%d/%Y")
+    
+    # Data to match with: patients and their first/last visit
+    pats_to_match <- therapydata %>% group_by(ENROLID) %>% summarize(first_tmt = min(SVCDATE), 
+                                                                     last_tmt = max(SVCDATE), 
+                                                                     spell_length=last_tmt-first_tmt)
+    pats_to_match <- pats_to_match[!is.na(pats_to_match$ENROLID),]
+    
+    # Keeping prescriptions starting after the first visit (will remove long treatments after putting all years together) 
+    scripsdata <- left_join(scripsdata, pats_to_match, by=c("ENROLID"))
+    scripsdata <- scripsdata[scripsdata$SVCDATE >= scripsdata$first_tmt, ] # Removes prescriptions given before first visit
+    scripsdata <- scripsdata[scripsdata$SVCDATE <= scripsdata$last_tmt + 90, ] # Removes scrips given 3 months after last visit (too wide?)
+    
+    # Saving data (for now)
+    save(scripsdata, file=here("2_Data", "ED_Outpatient_AllPharmacy.Rda"))
+}
+
+```
+
+## Do my therapists populate the entire sample, or are they in and out? 
+``` {r plot_therapists_over_time, echo=F, warning=F, message=F}
+##### THIS CHUNK: Looks at whether therapists are in the entire time sample, or if they are in and out. 
+#
+#     OUTPUT: * Therapist_EntryExit.png, a graph of therapist entry/exit over time
+#             * Therapists_in_Sample.png, a graph of how many therapists are treating patients at any given quarter. 
+#     
+#     MAJOR EDITS:
+#        - (TBA): Understand 2010 exodus of therapists
+#        - (TBA): Understand why 45% or so have breaks in their time series. 
+################################################################################
+
+# Data setup
+load(here("2_Data", "ED_Outpatient_TherapistQuarter_Panel.Rda"))
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+#     A. Entry/exit dates for each therapist
+one_therapist <- therapistdata %>% group_by(PROVID) %>% summarise(first_qtr = mean(first_qtr), 
+                                                                  last_qtr = mean(last_qtr))
+graphdata <- one_therapist %>% group_by(first_qtr) %>% summarise(entry = n())
+colnames(graphdata) <- c("quarter", "entry")
+graphdata2 <- one_therapist %>% group_by(last_qtr) %>% summarise(exit = n())
+colnames(graphdata2) <- c("quarter", "exit")
+graphdata <- left_join(graphdata, graphdata2, by = c("quarter"))
+graphdata <- graphdata[2:43, ] # Dropping the first and last quarters for the graph
+fig <- ggplot(graphdata) + geom_line(aes(x=quarter, y=entry, color="Entry")) + geom_line(aes(x=quarter, y = exit, color="Exit")) + 
+  theme_minimal() + ggtitle("Entry and Exit of Therapists in Sample") + scale_x_continuous(breaks = c(2008, 2010, 2012, 2014, 2016)) + 
+  labs(x="Quarter", y = "# of Therapists Transitioning", color = "Transition Type", 
+       caption = "Note: This graph omits the first and last quarters of the data")
+ggsave(fig, file = here("4_Output/Figures", "Therapist_EntryExit.png"), width = 9)
+    # Lots of entry at beginning of the year and exit in last quarter -- *large* exit between 2009 and 2010. Entry declines and exit rises over time. 
+
+#     B. Graph of therapists over time
+graphdata <- therapistdata %>% group_by(quarter) %>% summarise(count = n())
+fig <- ggplot(graphdata, aes(x=quarter, y = count)) + geom_line() + theme_minimal() + ggtitle("# of Therapists in Sample") + labs(x = "Quarter", y = "# of Therapists")
+ggsave(fig, file = here("4_Output/Figures", "Therapists_in_Sample.png"), width = 9)
+    # Huge drop in number of therapists in sample from 2009 to 2010. Need to understand what is going on here? 
+
+#     C. How many therapists have gaps in the panel? 
+therapistdata <- therapistdata %>% group_by(PROVID) %>% mutate(has_breaks = ifelse(((last_qtr - first_qtr + 0.25) * 4) / n() == 1, 0, 1)) 
+    # About 45% of therapists have breaks in their panel data, even with padding from therapist claims. 
+```
+
+## What does experimentation look like? 
+``` {r plotting_experimentation, echo=F, warning=F, message=F}
+##### THIS CHUNK: Tries to understand what therapist experimentation looks like. 
+#
+#     OUTPUT: The code answers the following questions: 
+#                 1. How many times do therapists experiment with FBT in AN, on average? 
+#                 2. What does the timing of these experiments look like? 
+#                 3. Is there a way to quantify when treatment is no longer experimental? 
+#     Note that this is all on the quarter basis right now; could look at multi-treatment experimentation within a quarter later. 
+#
+#     MAJOR EDITS:
+#        - (TBA): Finish answering above questions
+################################################################################
+
+### Data Setup
+load(here("2_Data", "ED_Outpatient_TherapistQuarter_Panel.Rda"))
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+mydata <- therapistdata[therapistdata$adopter == 1, ] # Keep only users for this analysis
+#############
+
+### 1. How many times do therapists experiment with FBT in AN, on average
+mydata1 <- mydata %>% group_by(PROVID) %>% summarize(num_uses_FBT = sum(an_fbt_use))
+hist(mydata1$num_uses_FBT) # Can see decaying pattern in the number of uses by therapist
+summary(mydata1$num_uses_FBT) # Mean and median of use are between 2-3 tries per therapist. Max is 39. 
+
+# Given the results in 2, how many therapists/adopters only use FBT once? 
+xtabs(~mydata1$num_uses_FBT) # 551 use FBT only once. That's 45% of adopters and 11% of all therapists. 
+
+### 2. What is the timing of experimentation like? 
+# Maybe a re-centered time series here, with first use at t = 0, then fraction using at each subsequent quarter. So you would show share of therapists using FBT again in subsequent quarters (rather than share of patients receiving FBT as your poster graph *supposedly* showed -- that one needs fixed. ) 
+mydata$time <- as.numeric(mydata$quarter - mydata$first_fbt_an)
+mydata2 <- mydata %>% filter(time >= 0) %>% group_by(time) %>% summarise(share_use = mean(an_fbt_use)) # Keeping from first experiment on
+fig <- ggplot(mydata2, aes(x=time, y=share_use)) + geom_line() + theme_minimal() + scale_x_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) + 
+  labs(x = "Years since first adoption", y = "Share of adopters using FBT for AN treatments") + ggtitle("Therapist Experimentation Patterns")
+ggsave(fig, file = here("4_Output/Figures", "Therapist_Experimentation_Diffusion.png"), width = 9)
+
+### 3. When is treatment no longer an experiment? 
+# From above, number of tries is typically small. May want to make this more nuanced, but for now, any adoption over 2 times could be successful takeup.
+```
+
+``` {r intro_regression, echo = F, warning = F, message = F}
+##### THIS CHUNK: Tries to understand which factors drive adoption decisions in a simple regression framework. 
+#
+#     OUTPUT: A regression of use of family therapy (in a claim) on the following: 
+#         - MSA fixed effects (home MSA from patient panel)
+#         - PROVID fixed effects
+#         - quarter fixed effects
+#         - ENROLID fixed effects
+#         - PLANTYP dummies (overall PLANTYP from patient panel)
+#         - Patient demographics: age, quarter_tmt_length, quarter_num_claims, quarter_tmt_center_type2 (stdprov), quarter_avg_copay, spellcount, length_spell, 
+#                                 multiple diagnoses, overall_num_therapists
+#         - Therapist demographics: experience, tot_visits, tot_patients, frac_visits_an, frac_pats_an, nan_fbt_use, perc_presc
+#         - MSA demographics: 
+#
+#     MAJOR EDITS:
+#        - TBA: Add MSA demographics to this (see Summary Stats in Tables for details)
+################################################################################
+
+# This takes a long time to run, so only if you want it to
+run <- F
+
+if (run) {
+   load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+    # Merge in some of the patient/plan characteristics calculated earlier. 
+    load(here("2_Data", "ED_Outpatient_PatientQuarter_Panel.Rda"))
+    vars_to_merge <- c("ENROLID", "quarter", "home_MSA", "overall_plantyp", "age", "quarter_tmt_length", "quarter_num_claims", "quarter_tmt_center_type2", "quarter_avg_copay",
+                       "spellcount", "length_spell", "multiple_diagnoses", "overall_num_therapists")
+    mydata <- left_join(therapydata, patientpanel[, names(patientpanel) %in% vars_to_merge], by = c("ENROLID", "quarter"))
+    
+    ### Add in MSA demographics later
+    
+    # Regression
+    mydata <- dummy_cols(mydata, select_columns = c("home_MSA"))
+    mydata <- dummy_cols(mydata, select_columns = c("PROVID"))
+    mydata <- dummy_cols(mydata, select_columns = c("ENROLID"))
+    mydata <- dummy_cols(mydata, select_columns = c("overall_PLANTYP"))
+    mydata <- dummy_cols(mydata, select_columns = c("quarter_tmt_center_type2"))
+    
+    colnames_MSA <- as.vector(mydata %>% select(starts_with("home_MSA_")) %>% colnames()))
+    colnames_PROVID <- as.vector(mydata %>% select(starts_with("PROVID_")) %>% colnames()))
+    colnames_ENROLID <- as.vector(mydata %>% select(starts_with("ENROLID_")) %>% colnames()))
+    colnames_PLANTYP <- as.vector(mydata %>% select(starts_with("overall_PLANTYP_")) %>% colnames()))
+    colnames_stdprov <- as.vector(mydata %>% select(starts_with("quarter_tmt_center_type2_")) %>% colnames()))
+
+    # Make quarter and ENROLID the fixed effects in a plm, add dummies for everything else.
+    
+    simple_model <- lm(as.formula(paste("fam_therapy ~", paste(colnames_MSA, collapse = "+"), "+", paste(colnames_PROVID, collapse = "+"), "+",
+                        paste(colnames_ENROLID, collapse = "+"), "+", paste(colnames_PLANTYP, collapse = "+"), "+", paste(colnames_stdprov, collapse = "+"), 
+                        "+age + quarter_tmt_length + quarter_num_claims + quarter_avg_copay + spellcount + length_spell + 
+                                        multiple_diagnoses + overall_num_therapists + experience + tot_visits + tot_patients + frac_visits_an + frac_pats_an + 
+                                        nan_fbt_use + perc_presc", sep = "")), data = mydata)
+    summary(simple_model) # What do I find here? 
+}
+
+
+```

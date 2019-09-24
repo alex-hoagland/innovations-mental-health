@@ -1,0 +1,471 @@
+---
+title: "Artisanal Innovation Analysis"
+subtitle: "Outpatient visits for ED Treatment"
+author: "Alex Hoagland"
+date: April 2019
+output: 
+  beamer_presentation:
+    slide_level: 2
+  includes: 
+  in_header: ~Dropbox/rtw_synth_control/output/rmd-beamer-header.tex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+# Packages
+# library(sf)
+# library(tigris) # Used for mapping MSAs -- calls package sf as well
+library(readxl)
+library(tidyverse)
+library(tidylog)
+library(zoo) # Useful for date formats
+library(reshape2)
+library(here)
+library(stargazer)
+library(knitr)
+library(maps)
+library(cdlTools) # Used for FIPS codes 
+library(plotrix) # Calculates SE's in summary tables
+library(kableExtra) # For tables in R
+library(data.table) # Extra commands used in dplyr (e.g., uniqueN)
+
+# Functions I want
+Mode <- function(x) {
+  ux <- unique(x[!is.na(x)])
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+Modes <- function(x) {
+  ux <- unique(x[!is.na(x)])
+  tab <- tabulate(match(x, ux))
+  ux[tab == max(tab)]
+}
+
+# Code tips I keep handy
+# beepr::beep("coin") # will make a noise when code is done running
+```
+
+## Introduction & Data Notes
+* Note: still need to add in in-patient data
+* There are some data concerns on Trello that I should add in here (and to data section of paper)
+
+``` {r data_setup, echo=F, warning=F, message=F}
+##### THIS CHUNK: Reads in outpatient data by year, 
+#                 Makes one outpatient-claim dataset (and saves it)
+#     
+#     MAJOR EDITS:  
+#         - TBA: Keep only patient/physician pairs that include some direct MH treatment
+#         - TBA: Form data set of physicians' other treatments (for identification?)
+################################################################################
+
+########## NOTE: Therapy treatment indicators in Excel file have changed. Need to double check these before re-running this section. 
+
+# Check if the file exists before proceeding with this chunk 
+if (!file.exists(here("2_Data", "ED_Outpatient_AllClaims.Rda"))) {
+  # Reading in each year's data
+  for (i in 2007:2015) {
+    nam <- paste("mydata", i, sep="")
+    assign(nam, read.csv(here("2_Data", paste("ED_", i, ".csv", sep=""))))
+  }
+  mydata <- read.csv(here("2_Data", "ED_2016_2017.csv"))
+  
+  # Identifying which variables are constant across years
+  datasets <- list(mydata, mydata2007, mydata2008, mydata2009, mydata2010, mydata2011, mydata2012, mydata2013, mydata2014, mydata2015)
+  wanted_varnames <- Reduce(intersect, lapply(datasets, names)) # This gives all variable names that are common across data sets. 
+                                             # NOTE: there have been no major name changes in these years. 
+                                             # NOTE 2: Some important variables this leaves out are: DXVER (2015+) and precise geog (2007-2010)
+    
+      # A summary of changes in the data that may be useful: 
+      # In 2009, DX3 and DX4 were added 
+      # In 2011, precise geography (3-digit zips, county indicators, etc.) were removed. Hospital ID removed, Family ID added. 
+      # In 2015, DXVER and PROCTYP added to accomodate ICD changes. 
+  
+  # Merging data (and saving it)
+  wanted_varnames1 <- append(wanted_varnames, c("EMPCTY", "PROVCTY", "EMPZIP", "PROVZIP")) # Keep refined geog variables for early years
+  mydata2007 <- mydata2007[wanted_varnames1]
+  mydata2008 <- mydata2008[wanted_varnames1]
+  mydata2009 <- mydata2009[wanted_varnames1]
+  mydata2010 <- mydata2010[wanted_varnames1]
+  mydata2011 <- mydata2011[wanted_varnames]
+  mydata2012 <- mydata2012[wanted_varnames]
+  mydata2013 <- mydata2013[wanted_varnames]
+  mydata2014 <- mydata2014[wanted_varnames]
+  
+  wanted_varnames <- append(wanted_varnames, c("DXVER")) # Adding DXVER for 2015 on. 
+  mydata2015 <- mydata2015[wanted_varnames]
+  mydata <- mydata[wanted_varnames]
+  
+  merged1 <- rbind(mydata2011, mydata2012, mydata2013, mydata2014)
+  merged1$EMPCTY <- rep(NA, nrow(merged1))
+  merged1$PROVCTY <- rep(NA, nrow(merged1))
+  merged1$EMPZIP <- rep(NA, nrow(merged1))
+  merged1$PROVZIP <- rep(NA, nrow(merged1))
+  
+  tomerge <- rbind(mydata2007, mydata2008, mydata2009, mydata2010, merged1)
+  tomerge$DXVER <- rep(NA, nrow(tomerge))
+  tomerge$DX1 <- as.character(tomerge$DX1) # Making sure diagnosis codes don't disappear later
+
+  mydata$EMPCTY <- rep(NA, nrow(mydata))
+  mydata$PROVCTY <- rep(NA, nrow(mydata))
+  mydata$EMPZIP <- rep(NA, nrow(mydata))
+  mydata$PROVZIP <- rep(NA, nrow(mydata))
+  mydata$DX1 <- as.character(mydata$DX1) # Making sure diagnosis codes don't disappear later
+  
+  mydata2015$EMPCTY <- rep(NA, nrow(mydata2015))
+  mydata2015$PROVCTY <- rep(NA, nrow(mydata2015))
+  mydata2015$EMPZIP <- rep(NA, nrow(mydata2015))
+  mydata2015$PROVZIP <- rep(NA, nrow(mydata2015))
+  mydata2015$DX1 <- as.character(mydata2015$DX1) # Making sure diagnosis codes don't disappear later
+  
+  mydata <- rbind(mydata, tomerge, mydata2015) 
+  
+  mydata <- mydata[order(mydata$YEAR, mydata$PROVID, mydata$ENROLID), ] # Sort by year, then provider id, then patient id
+    
+  # Making service date into a date variable 
+  mydata$SVCDATE <- as.character(mydata$SVCDATE)
+  mydata$SVCDATE <- as.Date(mydata$SVCDATE, "%m/%d/%Y")
+  mydata$date_monthyr <- format(as.Date(mydata$SVCDATE), "%Y-%m") # Extra month variable 
+  
+  save(mydata, file = here("2_Data", "ED_Outpatient_AllClaims.Rda"))
+}
+
+# Cleaning up workspace
+rm(list = ls())
+```
+
+``` {r getting_all_procs, warning=F, message=F, echo=F}
+##### DEPRECATED CODE CHUNK used to get a list of all proceedure codes used in the data of interest. 
+do_you_want_this <- F
+# Data of interest
+if (do_you_want_this) {
+  load(here("2_Data", "ED_Outpatient_AllClaims.Rda"))
+  
+  w = as.data.frame(table(mydata$PROC1))
+  write_xlsx(w, here("2_Data", "AllProcs_EDOutpatient.xlsx"))
+}
+```
+
+
+``` {r data_cleanup, warning=F, message=F, echo=F}
+##### THIS CHUNK: 1. Adds in proceedure descriptions for the PROC1 variable
+#                 2. Constructs a data set for only therapeutic dr-patient matches
+#                 3. Constructs patient/therapist/spell panels 
+#
+#     OUTPUT: 
+#        - 2_Data/ED_Outpatient_TherapyClaims.Rda: All claims where patient/physician engage in at least 1 MH treatment
+#        - 2_Data/ED_Outpatient_PatientPanel.Rda: 
+#        - 2_Data/ED_Outpatient_TherapistPanel.Rda: Each obs is a therapist/month for every therapist providing at least 1 MH tmt
+#        - 2_Data/ED_Outpatient_SpellPanel.Rda:
+#     
+#     MAJOR EDITS:
+#        - TBA: create spell, patient, therapist-specific data sets. 
+#        - TBA: keep only those up to 19 years old (for family-based therapy)
+################################################################################
+
+# Data of interest
+load(here("2_Data", "ED_Outpatient_AllClaims.Rda"))
+
+# Family therapy indicator
+fam_therapy_procs <- c(90846, 90847, 90849, 90887, 96154, 96155) # NOTE: 90849 is multi-family therapy. 
+                                                                 # NOTE: 90849 spikes in 2012 then declines after 2014 -- interesting innovation?
+                                                                 # NOTE: Check this with inpatient visits (need larger sample size)
+mydata$fam_therapy <- ifelse(mydata$PROC1 %in% fam_therapy_procs, 1, 0)
+
+## 1. Merging in procedure labels
+if (!file.exists(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))) {
+  procslist <- read_xlsx(here("2_Data", "AllProcs_EDOutpatient.xlsx"))
+  procslist$`Therapy treatment`[is.na(procslist$`Therapy treatment`)] <- 0
+  procslist <- procslist[, c(1, 3, 5)]
+  colnames(procslist) <- c("PROC1", "PROCDESC", "PROC_therapy")
+  procslist <- procslist[order(procslist$PROC1), ]
+  
+  mydata <- left_join(mydata, procslist, by="PROC1", all.x=F, all.y=F)
+  mydata$PROC_therapy[is.na(mydata$PROC_therapy)] <- 0
+  
+  ## 2. Identifying patient-provider pairs with a therapy procedure
+  mydata <- mydata[order(mydata$ENROLID, mydata$PROVID), ]
+  mydata <- mydata %>% group_by(ENROLID, PROVID) %>% mutate(is_therapy = max(PROC_therapy))
+  therapydata <- mydata[(mydata$is_therapy == 1), ]
+  
+  ## 3. Keeping only those eligible for family therapy (under 20 yoa)
+  therapydata <- therapydata[therapydata$AGE < 20, ]
+  
+  save(therapydata, file = here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+}
+```
+
+``` {r therapist_panel, warning=F, message=F, echo=F}
+##### THIS CHUNK: Creates a therapist-quarter panel data set for use in summary stats and main analysis of diffusion. 
+# 
+#     OUTPUT: ED_Outpatient_TherapistQuarter_Panel.Rda. See comments in collapsing section below for specific variable descriptions. 
+#     
+#     MAJOR EDITS:
+#        - TBA: Add physician's main specialty, fix provider types. 
+################################################################################
+
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+if (!("first_qtr" %in% colnames(therapydata))) {
+      for (i in 2007:2017) {
+        nam <- paste("alltmts", i, sep="")
+        assign(nam, read.csv(paste("C:\\Users\\alexh\\Documents\\AllTmts_", i, ".csv", sep="")))
+      }
+    
+    alltmts2007 <- alltmts2007[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2008 <- alltmts2008[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2009 <- alltmts2009[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2010 <- alltmts2010[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2011 <- alltmts2011[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2012 <- alltmts2012[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2013 <- alltmts2013[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2014 <- alltmts2014[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2015 <- alltmts2015[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2016 <- alltmts2016[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    alltmts2017 <- alltmts2017[, c("YEAR", "SVCDATE", "DX1", "PROC1", "PLANTYP", "RX", "PROVID", "STDPROV", "AGE",  "ENROLID", "MSA")]
+    
+    alltmts <- rbind(alltmts2007, alltmts2008, alltmts2009, alltmts2010, alltmts2011, alltmts2012, 
+                     alltmts2013, alltmts2014, alltmts2015, alltmts2016, alltmts2017)
+    
+    rm(alltmts2007, alltmts2008, alltmts2009, alltmts2010, alltmts2011, alltmts2012, 
+                     alltmts2013, alltmts2014, alltmts2015, alltmts2016, alltmts2017)
+    
+    # Generate the quarter variable
+    alltmts$month <- as.numeric(substr(alltmts$SVCDATE, 1, 2))
+    alltmts$quarter <- ifelse(alltmts$month < 4, paste(alltmts$YEAR, "Q1", sep = " "), 
+                              ifelse(alltmts$month < 7, paste(alltmts$YEAR, "Q2", sep = " "), 
+                              ifelse(alltmts$month < 10, paste(alltmts$YEAR, "Q3", sep = " "), 
+                              paste(alltmts$YEAR, "Q4", sep = " "))))
+    alltmts$quarter <- zoo::as.yearqtr(alltmts$quarter)
+    
+    # Collapsing to provider-quarter level
+    fam_therapy_procs <- c(90846, 90847, 90849, 90887, 96154, 96155) 
+    alltmts$fam_therapy <- ifelse(alltmts$PROC1 %in% fam_therapy_procs, 1, 0)
+    alltmts$dx_an <- ifelse(alltmts$DX1 == "3071", 1, ifelse(substr(alltmts$DX1, 1, 4) == "F500", 1, 0)) # All anorexia patients
+    alltmts$fbt_eligible <- ifelse(alltmts$dx_an == 1, ifelse(alltmts$AGE < 20, 1, 0), 0) # AN patients under 20 -- eligible for FBT. 
+    
+    # Dummies for individual and group therapies
+    alltmts$PROC1 <- as.numeric(as.character(alltmts$PROC1))
+    alltmts$ind_therapy <- ifelse((alltmts$PROC1 >= 90832 & alltmts$PROC1 <= 90838) | (alltmts$PROC1 >= 90801 & alltmts$PROC1 <= 90810), 1, 0) 
+          # Updated May 17, 2019 -- make sure they are correct elsewhere? 
+    alltmts$gp_therapy <- ifelse(alltmts$PROC1==90853, 1, 0)
+    alltmts[is.na(alltmts$PROC1), ]$ind_therapy <- 0 # If missing procedure, then don't count as IBT or GBT
+    alltmts[is.na(alltmts$PROC1), ]$gp_therapy <- 0 # If missing procedure, then don't count as IBT or GBT
+    
+    # Variables used in the collapse to the panel
+    alltmts$an_enrolid <- ifelse(alltmts$dx_an == 1, alltmts$ENROLID, NA)
+    alltmts$an_fbt <- ifelse(alltmts$dx_an == 1, alltmts$fam_therapy, NA)
+    alltmts$nan_fbt <- ifelse(alltmts$dx_an == 0, alltmts$fam_therapy, NA)
+    alltmts$an_fbt_elig <- ifelse(alltmts$fbt_eligible == 1, alltmts$ENROLID, NA)
+    
+    # Finally, an indicator denoting which AN-FBT eligible patients actually received FBT
+    alltmts <- alltmts %>% group_by(PROVID, quarter, ENROLID) %>% mutate(gotfbt = max(fam_therapy) / n())
+    alltmts$gotfbt <- ifelse(is.na(alltmts$an_fbt_elig), NA, alltmts$gotfbt)
+    
+    # Collapsing the claims-level data to therapist-quarter panel. 
+    therapistdata <- alltmts %>% group_by(PROVID, quarter) %>% summarize(provtype = first(as.numeric(STDPROV)), 
+                                                                         # First provider type -- not a mode or anything else. FIX!
+                                                               tot_visits = n(), # Total visits to therapist in quarter
+                                                               tot_patients = n_distinct(ENROLID), # Total distinct patients to therapist in quarter
+                                                               an_tot_visits = sum(dx_an), # Total AN visits 
+                                                               an_tot_patients = n_distinct(an_enrolid, na.rm=TRUE), # Total AN patients
+                                                               an_fbt_use = ifelse(an_tot_patients > 0, max(an_fbt, na.rm = T), 0), 
+                                                                 # Was FBT used in treating AN? 
+                                                               nan_fbt_use = ifelse(tot_patients - an_tot_patients > 0, max(nan_fbt, na.rm = T), 0), 
+                                                                  # Was FBT used *not* in treating AN? 
+                                                               frac_visits_an = mean(dx_an), # What fraction of visits are for AN?
+                                                               frac_pats_an = an_tot_patients/tot_patients, # What fraction of patients are AN? 
+                                                               frac_visits_fbt_elig = mean(fbt_eligible), 
+                                                                  # What fraction of total visits are AN-FBT eligible?
+                                                               frac_pats_fbt_elig = n_distinct(an_fbt_elig, na.rm = TRUE)/tot_patients, 
+                                                                  # % of total patients that are AN-FBT eligible
+                                                               frac_an_pats_fbt_elig = ifelse(an_tot_patients > 0, n_distinct(an_fbt_elig, na.rm = TRUE) /an_tot_patients, 0),
+                                                                  # % of AN patients that are AN-FBT eligible
+                                                               frac_famt = mean(fam_therapy), # Fraction of all treatments dedicated to FBT
+                                                               frac_indt = mean(ind_therapy), # Fraction of all treatments dedicated to IBT
+                                                               frac_gpt = mean(gp_therapy), # Fraction of all treatments dedicated to GBT
+                                                             share_anelig_fbt=ifelse(frac_an_pats_fbt_elig>0,sum(gotfbt,na.rm=T)/(frac_an_pats_fbt_elig*an_tot_patients), 0),
+                                                                  # Share of AN-FBT eligible patients that get FBT. 
+                                                               perc_presc = mean(RX), # % of visits ending in a prescription. 
+                                                               MSA = paste(Modes(MSA), collapse = ", ") # MSA: where they file most claims each quarter
+                                                             ) 
+    
+    # There are three weird places that you want to fix -- these places are missing ENROLID for the whole quarter, 
+    # so you can't tell whether they are AN pat's or not
+    therapistdata[therapistdata$nan_fbt_use < 0, ]$nan_fbt_use <- 0
+    
+    # Adding in provider experience
+    therapistdata <- therapistdata %>% group_by(PROVID) %>% mutate(first_qtr = min(quarter), 
+                                                                   last_qtr = max(quarter), 
+                                                                   first_fbt_external = min(quarter[nan_fbt_use > 0]), 
+                                                                   first_fbt_an = min(quarter[an_fbt_use > 0]),
+                                                                   adopter = max(an_fbt_use))
+    therapistdata[therapistdata$first_fbt_external > 2020, ]$first_fbt_external <- NA
+    therapistdata[therapistdata$first_fbt_an > 2020, ]$first_fbt_an <- NA
+    
+    therapistdata$experience <- as.numeric(therapistdata$quarter) - therapistdata$first_qtr
+    therapistdata$first_qtr <- as.yearqtr(therapistdata$first_qtr)
+    therapistdata$last_qtr <- as.yearqtr(therapistdata$last_qtr)
+    therapistdata$first_fbt_external <- as.yearqtr(therapistdata$first_fbt_external)
+    therapistdata$first_fbt_an <- as.yearqtr(therapistdata$first_fbt_an)
+    therapistdata$fbt_ext_first <- ifelse(therapistdata$first_fbt_external < therapistdata$first_fbt_an, 1, 0) # Did the therapist use FBT outside of AN first?
+    therapistdata[is.na(therapistdata$first_fbt_external) & !is.na(therapistdata$first_fbt_an),]$fbt_ext_first <- 0 # Note this is conditional on using FBT in AN at all
+    
+    # Merging this info into the original data
+    therapydata$month <- as.numeric(substr(therapydata$SVCDATE, 6, 7))
+    therapydata$quarter <- ifelse(therapydata$month < 4, paste(therapydata$YEAR, "Q1", sep = " "),
+                              ifelse(therapydata$month < 7, paste(therapydata$YEAR, "Q2", sep = " "),
+                              ifelse(therapydata$month < 10, paste(therapydata$YEAR, "Q3", sep = " "),
+                              paste(therapydata$YEAR, "Q4", sep = " "))))
+    therapydata$quarter <- as.yearqtr(therapydata$quarter)
+    therapydata <- left_join(therapydata, therapistdata, by = c("PROVID", "quarter"))
+    save(therapydata, file=here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+    
+    # Sorting and saving our new panel
+    therapistdata <- therapistdata[order(therapistdata$PROVID, therapistdata$quarter), ]
+    save(therapistdata, file=here("2_Data", "ED_Outpatient_TherapistQuarter_Panel.Rda"))
+}
+```
+
+
+``` {r create_patient_dataset, echo=F, warning=F, message=F}
+##### THIS CHUNK: In continuation of the above efforts, this creates a dataset of *all FBT-eligible AN patients* 
+#                 who received treatment (whether FBT or not) in our data set
+# 
+#     OUTPUT: ED_Outpatient_PatientLevel.Rda, in which each observation is a patient. 
+#               This data contains the following information: 
+#                 * Patient age (AGE, AGEGRP) at beginning and end of treatments
+#                 * Patient sex (SEX)
+#                 * Subscriber classification (EECLASs)
+#                 * Subscriber status (EESTATU)
+#                 * Subscriber industry (INDSTRY)
+#                 * Type of insurance plan -- employer or Health Plan (HLTHPLAN)
+#                 * Type of insurance plan -- HMO, PPO, etc. (PLANTYP)
+#                 * Relationship to insurance subscriber (EMPREL)
+#                 * Length of treatment (custom)
+#                 * Intensity of treatment -- number / frequency of claims (custom)
+#                 * Date of treatment start (custom)
+#                 * Date of treatment end (custom)
+#                 * MSA of coverage (MSA)
+#                 * Place of service type (STDPLAC)
+#                 * Provider type, visited a specialist? (STDPROV, PHYFLAG)
+#                 * Multiple diagnoses indicator (custom)
+#                 * Coninsurance / copayment rates + dispensing fee ((TOT)?CONIS, (TOT?)COPAY, DISPFEE)
+#                 * When did they receive FBT for the first time? (custom)
+#                 * Number of different therapists seen (custom; and number of switches) -- TODO: ADD SWITCHING INDICATORS
+#                 * 
+#     
+#     MAJOR EDITS:
+#        - TBA: Add in measure of treatment intensity for FBT (within quarter). 
+#        - TBA: Add prescriptions to panel part 
+#        - TBA: Add in average spell length (after ID'ing spells at all, lol)
+#        - TBA: Look at patient's treatment outside of these physicians (PCP's, etc.)
+#        - TBA: Incorporate patient's treatment history -- previous treatments, prescription history, etc. 
+################################################################################
+
+### Starting data
+load(here("2_Data", "ED_Outpatient_TherapyClaims.Rda"))
+
+### Part 1: Patient-level characteristics first
+therapydata[which(therapydata$MSA == 0), ]$MSA <- NA # Eliminate missing MSAs to find modes better. 
+therapydata[which(therapydata$INDSTRY == ""), ]$INDSTRY <- NA # Change missing industries to find modes better
+
+patientdata <- therapydata %>% group_by(ENROLID) %>% summarize(starting_age = min(AGE), 
+                                                               ending_age = max(AGE), 
+                                                               female = ifelse(Mode(SEX) == 2, 1, 0), 
+                                                               overall_empclass = Mode(EECLASS), 
+                                                               overall_empstat = Mode(EESTATU), 
+                                                               overall_industry = Mode(INDSTRY), 
+                                                               overall_hlthpln = Mode(HLTHPLAN), 
+                                                               overall_plantyp = Mode(PLANTYP), 
+                                                               overall_emprel = Mode(EMPREL), 
+                                                               first_treatment = min(SVCDATE), 
+                                                               last_treatment = max(SVCDATE),
+                                                               total_treatment_length = as.numeric(max(SVCDATE) - min(SVCDATE) + 1),
+                                                               total_num_claims = n(),
+                                                               total_treatment_intensity = 30*(n_distinct(SVCDATE) / total_treatment_length), # Num of visits per 30 days
+                                                               home_MSA = Mode(MSA), 
+                                                               main_tmt_center_type = Mode(STDPLAC), 
+                                                               main_tmt_center_type2 = Mode(STDPROV), 
+                                                               multiple_diagnoses = ifelse(n_distinct(DX2) > 1, 1, 0), 
+                                                               overall_avg_coins = mean(COINS), 
+                                                               overall_avg_copay = mean(COPAY), 
+                                                               overall_num_therapists = n_distinct(PROVID, na.rm = TRUE)) 
+
+### Part 2: Treatment panel 
+treatpanel <- therapydata %>% group_by(ENROLID, quarter) %>% summarize(age = mean(AGE), 
+                                                                       ee_class = Mode(EECLASS), 
+                                                                       empstat = Mode(EESTATU), 
+                                                                       industry = Mode(INDSTRY), 
+                                                                       plantyp = Mode(PLANTYP), 
+                                                                       emprel = Mode(EMPREL), 
+                                                                       MSA = Mode(MSA), 
+                                                                       quarter_tmt_length = as.numeric(max(SVCDATE) - min(SVCDATE) + 1), 
+                                                                       quarter_num_claims = n(), 
+                                                                       quarter_tmt_intensity = 30 * (quarter_num_claims / quarter_tmt_length),
+                                                                       quarter_tmt_center_type = Mode(STDPLAC), 
+                                                                       quarter_tmt_center_type2 = Mode(STDPROV), 
+                                                                       quarter_visited_specialist = ifelse(max(PHYFLAG) == 1, 1, 0), 
+                                                                       quarter_avg_coins = mean(COINS), 
+                                                                       quarter_avg_copay = mean(COPAY), 
+                                                                       gotFBT = max(fam_therapy), 
+                                                                       main_therapist = Mode(PROVID), 
+                                                                       num_therapists = n_distinct(PROVID))
+
+## Identifying patients that moved. 
+treatpanel <- treatpanel[order(treatpanel$ENROLID, treatpanel$quarter), ]
+treatpanel <- treatpanel %>% group_by(ENROLID) %>% mutate(mover = ifelse(is.na(lag(MSA)), 0, ifelse(MSA - lag(MSA) == 0, 0, 1))) 
+treatpanel[is.na(treatpanel$MSA), ]$mover <- NA # Replace all movers with NA if there is no MSA info to start with.
+
+
+## Identifying breaks in treatments -- define a new spell as a two quarters without AN claims (so 2-period breaks in panel == new spell). 
+treatpanel$newq <- as.numeric(treatpanel$quarter)
+treatpanel <- treatpanel %>% group_by(ENROLID) %>% complete(newq = seq(min(newq, na.rm=T), max(newq, na.rm=T), by=0.25))
+treatpanel$quarter <- as.yearqtr(treatpanel$newq)
+treatpanel <- treatpanel[, !(names(treatpanel) %in% c("newq"))]
+treatpanel[is.na(treatpanel$age), c("quarter_tmt_length", "quarter_num_claims", "quarter_tmt_intensity")] <- 0 # Filling in with zeros
+treatpanel$break_ind <- ifelse(treatpanel$quarter_tmt_length == 0 , 1, 0) # Indicator for break or not
+treatpanel <- treatpanel %>% group_by(ENROLID, grp = {grp = rle(break_ind); rep(seq_along(grp$lengths), grp$lengths)}) %>% 
+  mutate(length_spell = max(seq_along(grp))) %>% ungroup() %>% select(-grp) # This constructs length of spells and breaks
+treatpanel$spell_number <- ifelse(treatpanel$break_ind == 1 & treatpanel$length_spell >= 2, 1/treatpanel$length_spell, 0) # To use in cumulative sum to count spells
+treatpanel <- treatpanel %>% group_by(ENROLID) %>% mutate(spellcount = ifelse(break_ind == 0, 1+cumsum(spell_number), NA)) # Counts number of spells
+treatpanel$length_break <- ifelse(treatpanel$break_ind == 1, treatpanel$length_spell, NA)
+treatpanel <- treatpanel %>% group_by(ENROLID) %>% mutate(spellcount = ifelse(break_ind == 1 & length_break < 2, lag(spellcount), spellcount)) 
+    # Replaces one-period breaks into previous spell
+treatpanel <- treatpanel[, !(names(treatpanel) %in% c("spell_number", "length_spell") )]
+treatpanel <- treatpanel %>% group_by(ENROLID, spellcount) %>% mutate(length_spell = 4*(max(quarter) - min(quarter)) + 1)
+treatpanel[is.na(treatpanel$spellcount), ]$length_spell <- NA # Don't have spell length for breaks
+
+
+## Identifying overall FBT use
+treatpanel$FBTquarter <- ifelse(treatpanel$gotFBT == 1, treatpanel$quarter, NA)
+    # FBT indicators at spell level
+treatpanel <- treatpanel %>% group_by(ENROLID, spellcount, grp = {grp = rle(gotFBT); rep(seq_along(grp$lengths), grp$lengths)}) %>% mutate(spell_got_FBT = max(gotFBT), 
+                  spell_consec_FBT=ifelse(spell_got_FBT==1, max(seq_along(grp)), NA)) %>%
+                        # longest consecutive FBT treatment within a spell
+                  ungroup() %>% select(-grp)
+
+    # FBT indicators at patient level
+treatpanel <- treatpanel %>% group_by(ENROLID) %>% mutate(ever_got_FBT = max(gotFBT, na.rm = T), 
+                                                          first_FBT = ifelse(ever_got_FBT == 1, min(FBTquarter, na.rm = T), NA), 
+                                                          completed_FBT = ifelse(ever_got_FBT == 1, ifelse(max(spell_consec_FBT, na.rm = T) >= 2, 1, 0), NA), 
+                                                          longest_FBT = ifelse(ever_got_FBT == 1, max(spell_consec_FBT, na.rm = T), NA))
+treatpanel <- treatpanel[, !(names(treatpanel) %in% c("FBTquarter"))]
+
+
+### Part 3: Merge, clean, and save
+patientpanel <- left_join(treatpanel, patientdata, by = c("ENROLID"))
+patientpanel <- patientpanel[order(patientpanel$ENROLID,patientpanel$quarter),]
+save(patientpanel, file=here("2_Data", "ED_Outpatient_PatientQuarter_Panel.Rda"))
+```
+
+``` {r create_spell_panel, echo=F, warning=F, message=F}
+##### THIS CHUNK: In continuation of the above efforts, this can be expanded later into the spell data set
+# 
+#     OUTPUT:
+#     
+#     MAJOR EDITS:
+#        - TBA: Develop this chunk more. 
+################################################################################
+## 3.c. Spell-panel data
+
+```
